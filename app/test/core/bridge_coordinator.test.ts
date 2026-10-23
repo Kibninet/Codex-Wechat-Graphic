@@ -1071,6 +1071,46 @@ test('attachment download failures do not create provider threads or empty model
   assert.equal(compatible.startTurnCalls.length, 0);
 });
 
+test('steering targets only the originating active conversation without creating a new turn', async () => {
+  const { runtime, openai, compatible } = makeRuntime();
+  const coordinator = runtime.services.bridgeCoordinator;
+  const scope = { platform: 'weixin', externalScopeId: 'owner::cbchat:first' };
+  runtime.services.activeTurns.beginScopeTurn(scope, { providerProfileId: 'openai-default', threadId: 'thread-1', turnId: 'turn-1' });
+  runtime.services.activeTurns.beginScopeTurn({ ...scope, externalScopeId: 'owner::cbchat:second' }, {
+    providerProfileId: 'openai-default', threadId: 'thread-2', turnId: 'turn-2',
+  });
+  const additions: any[] = [];
+  (openai as any).steerTurn = async params => { additions.push(params); return { turnId: params.turnId }; };
+  const response = await coordinator.steerInboundEvent({ ...scope, text: 'also test the timeout' });
+  assert.equal(response.status, 'accepted');
+  assert.equal(additions.length, 1);
+  assert.equal(additions[0].threadId, 'thread-1');
+  assert.equal(additions[0].turnId, 'turn-1');
+  assert.equal(additions[0].event.text, 'also test the timeout');
+  assert.equal(openai.startTurnCalls.length, 0);
+  assert.equal(compatible.startTurnCalls.length, 0);
+});
+
+test('steering distinguishes idle, unsupported and ambiguous failures without automatic retransmission', async () => {
+  const { runtime, openai } = makeRuntime();
+  const coordinator = runtime.services.bridgeCoordinator;
+  const event = { platform: 'weixin', externalScopeId: 'owner', text: 'follow up' };
+  assert.equal((await coordinator.steerInboundEvent(event)).status, 'idle');
+  runtime.services.activeTurns.beginScopeTurn(event, { providerProfileId: 'openai-default', threadId: 'thread', turnId: 'turn' });
+  assert.equal((await coordinator.steerInboundEvent(event)).status, 'unsupported');
+  let attempts = 0;
+  (openai as any).steerTurn = async () => { attempts++; throw new Error('network timeout'); };
+  assert.equal((await coordinator.steerInboundEvent(event)).status, 'failed');
+  assert.equal(attempts, 1);
+  (openai as any).steerTurn = async () => { throw new Error('no active turn'); };
+  assert.equal((await coordinator.steerInboundEvent(event)).status, 'idle');
+  (openai as any).steerTurn = async () => ({ turnId: 'different-turn' });
+  assert.equal((await coordinator.steerInboundEvent(event)).status, 'failed');
+  runtime.services.activeTurns.endScopeTurn(event);
+  runtime.services.activeTurns.beginScopeTurn(event);
+  assert.equal((await coordinator.steerInboundEvent(event)).status, 'starting');
+});
+
 test('explicit drafts beginning with a slash are submitted as user text', async () => {
   const { runtime, openai } = makeRuntime();
   await runtime.services.bridgeCoordinator.handleInboundEvent({

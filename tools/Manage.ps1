@@ -240,7 +240,7 @@ try {
             Push-Location $appRoot
             try {
                 $env:TZ = 'UTC'
-                & $nodePath scripts/test.mjs test/platforms/weixin/official/media_crypto.test.ts test/platforms/weixin/official/media_download.test.ts test/platforms/weixin/plugin.test.ts test/runtime/weixin_inbound_drafts.test.ts test/runtime/weixin_conversation_router.test.ts test/runtime/managed_restart.test.ts test/runtime/weixin_bridge_runtime.test.ts test/platforms/weixin/poller.test.ts
+                & $nodePath scripts/test.mjs test/providers/codex/app_client.test.ts test/providers/codex/plugin.test.ts test/platforms/weixin/official/media_crypto.test.ts test/platforms/weixin/official/media_download.test.ts test/platforms/weixin/plugin.test.ts test/runtime/weixin_inbound_drafts.test.ts test/runtime/weixin_conversation_router.test.ts test/runtime/managed_restart.test.ts test/runtime/weixin_bridge_runtime.test.ts test/platforms/weixin/poller.test.ts
                 if ($LASTEXITCODE -ne 0) { throw '自检失败。' }
             } finally { Pop-Location }
         }

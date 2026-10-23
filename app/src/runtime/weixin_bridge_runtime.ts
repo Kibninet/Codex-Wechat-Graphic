@@ -66,6 +66,7 @@ interface PlatformPluginLike {
 }
 
 interface BridgeCoordinatorLike {
+  steerInboundEvent?(event: InboundTextEvent): Promise<{ status: 'accepted' | 'idle' | 'starting' | 'unsupported' | 'failed' }>;
   handleInboundEvent(
     event: InboundTextEvent,
     options: {
@@ -163,6 +164,7 @@ interface WeixinBridgeRuntimeOptions {
 }
 
 export class WeixinBridgeRuntime {
+  private queuedWorkEpoch = new Map<string, number>();
   requireSendCommand: boolean;
   inboundDrafts: WeixinInboundDrafts;
   static readonly NOTICE_COOLDOWN_MS = 30_000;
@@ -258,6 +260,7 @@ export class WeixinBridgeRuntime {
     this.conversationRouter = conversationRouter;
     this.requireSendCommand = requireSendCommand;
     this.inboundDrafts = new WeixinInboundDrafts(inboundDraftsPath);
+    this.conversationRouter?.setChatModeResolver((scopeId) => this.inboundDrafts.mode(scopeId) === 'chat');
     this.isConversationBusy = isConversationBusy;
     this.typingKeepaliveMs = typingKeepaliveMs;
     this.inboundAttachmentMergeWindowMs = inboundAttachmentMergeWindowMs;
@@ -401,7 +404,20 @@ export class WeixinBridgeRuntime {
     return [`草稿：${preview.length} 字，${names.length} 个附件。`,
       includePreview && preview ? `文字：${preview.slice(0, 500)}${preview.length > 500 ? '…' : ''}` : '',
       names.length ? `附件：${names.join('、')}` : '',
-      '发送 /send 提交；/send 补充说明 可一起提交；/discard 清空。'].filter(Boolean).join('\n');
+      '发送 /send 提交或追加；/add 补充要求 可立即提交；/discard 清空。'].filter(Boolean).join('\n');
+  }
+
+  isChatModeForRecipient(recipientId: string): boolean {
+    const scopeId = this.conversationRouter?.activeScopeForRecipient(recipientId) ?? recipientId;
+    return this.inboundDrafts.mode(scopeId) === 'chat';
+  }
+
+  private async steerDraft(event: InboundTextEvent) {
+    try {
+      return await this.bridgeCoordinator.steerInboundEvent?.(event) ?? { status: 'unsupported' as const };
+    } catch {
+      return { status: 'failed' as const };
+    }
   }
 
   private async prepareDraftInput(event: InboundTextEvent): Promise<{ event?: InboundTextEvent; response?: RuntimeResponse }> {
@@ -412,19 +428,44 @@ export class WeixinBridgeRuntime {
     }
     const command = parseSlashCommand(event.text);
     const previous = this.inboundDrafts.get(scopeId);
-    if (command?.name === 'send' && ['-h', '--help'].includes(command.args[0] ?? '')) {
-      return this.draftNotice(event, '先发送文字、图片或文件保存到草稿，再单独发送 /send 一并提交。也可 /send 补充说明。/pending 查看，/discard 清空。');
+    if (command?.name === 'stop') {
+      this.queuedWorkEpoch.set(scopeId, (this.queuedWorkEpoch.get(scopeId) ?? 0) + 1);
+      const merging = this.pendingInboundMerges.get(scopeId);
+      if (merging) {
+        this.pendingInboundMerges.delete(scopeId);
+        this.clearPendingInboundTimer(merging);
+        this.inboundDrafts.set(previous ? mergeInboundEvents(previous, merging.event) : merging.event);
+        merging.resolve({ type: 'canceled', messages: [] });
+      }
+    }
+    if (command?.name === 'mode') {
+      const requested = ({ work: 'work', chat: 'chat', 工作: 'work', 聊天: 'chat' } as const)[command.args[0] ?? ''];
+      if (command.args.length && (!requested || command.args.length !== 1)) {
+        return this.draftNotice(event, '用法：/mode work（工作）或 /mode chat（聊天）。单独 /mode 查看。');
+      }
+      if (requested) this.inboundDrafts.setMode(scopeId, requested);
+      const current = this.inboundDrafts.mode(scopeId);
+      return this.draftNotice(event, (current === 'chat'
+        ? '聊天模式：直接发消息即可，回复过程中继续发送会追加要求。'
+        : '工作模式：文字和文件静默存草稿，/send 一并提交；运行中 /send 或 /add 补充要求 可追加。')
+        + '\n/mode chat 聊天；/mode work 工作；/pending 查看草稿；/stop 停止。'
+        + (previous ? '\n已有草稿已保留；聊天模式下一条普通消息会与草稿一起提交。' : ''));
+    }
+    const chatMode = this.inboundDrafts.mode(scopeId) === 'chat';
+    const submitCommand = command?.name === 'send' || command?.name === 'add';
+    if (submitCommand && ['-h', '--help'].includes(command.args[0] ?? '')) {
+      return this.draftNotice(event, '工作模式先发文字或文件，再 /send 一并提交。/add 补充要求 可立即提交并追加到运行中任务。聊天模式直接发送。/pending 查看，/discard 清空，/stop 停止。');
     }
     if (command?.name === 'pending') return this.draftNotice(event, this.draftSummary(previous));
     if (command?.name === 'discard') {
       this.inboundDrafts.delete(scopeId);
       return this.draftNotice(event, '已清空当前聊天的草稿。');
     }
-    if (command && command.name !== 'send') {
+    if (command && !submitCommand) {
       return failure ? this.draftNotice(event, failure) : { event };
     }
-    const input = command?.name === 'send'
-      ? { ...event, text: event.text.replace(/^\s*\/send\b\s*/iu, '') }
+    const input = submitCommand
+      ? { ...event, text: event.text.replace(/^\s*\/(?:send|add)\b\s*/iu, '') }
       : event;
     const incomingId = String((event.metadata?.weixin as any)?.messageId ?? '');
     const ids = (previous?.metadata?.draftMessageIds ?? []) as string[];
@@ -439,14 +480,20 @@ export class WeixinBridgeRuntime {
       const weixin = draft.metadata?.weixin as Record<string, unknown> | undefined;
       if (weixin) draft = { ...draft, metadata: { ...draft.metadata, weixin: { ...weixin, attachmentErrors: [] } } };
     }
-    draft = { ...draft, metadata: { ...draft.metadata, draftFailedAttachments: failedCount,
+    draft = { ...draft, metadata: { ...draft.metadata, queuedAfterCurrent: false, queuedWorkEpoch: undefined, draftFailedAttachments: failedCount,
       draftMessageIds: [...new Set([...ids, ...(incomingId ? [incomingId] : [])])].slice(-256) } };
     if (draft.text.length > 100_000 || (draft.attachments?.length ?? 0) > 20) {
       return this.draftNotice(event, '单轮草稿最多 100000 字、20 个附件。原草稿已保留，请先 /send 或 /discard。');
     }
     this.inboundDrafts.set(draft);
     if (failure) return this.draftNotice(event, `${failure}\n草稿已保留；请重发失败的附件，或 /discard 清空后重新准备。`);
-    if (command?.name !== 'send') return this.draftNotice(event, `已保存到当前聊天草稿，尚未提交给模型。\n${this.draftSummary(draft, false)}`);
+    const autoSubmit = chatMode && (Boolean(input.text.trim()) || Boolean(input.attachments?.length)
+      && input.attachments!.every((item) => item.kind === 'image'));
+    if (!submitCommand && !autoSubmit) {
+      // Ordinary text has no success acknowledgement in either mode.
+      if (!chatMode && input.attachments?.length) return this.draftNotice(event, `已收到 ${input.attachments.length} 个附件，已存入草稿。/send 提交。`);
+      return { response: { type: 'draft', messages: [] } };
+    }
     const draftFailure = inboundAttachmentFailure(draft, this.i18n.locale);
     if (draftFailure) return this.draftNotice(event, `${draftFailure}\n草稿保留，请重发附件或 /discard。`);
     if (!draft.text.trim() && !draft.attachments?.length) {
@@ -456,19 +503,45 @@ export class WeixinBridgeRuntime {
     const missing = (draft.attachments ?? []).some((item) => !fs.existsSync(item.localPath));
     if (missing) return this.draftNotice(event, '草稿中的附件已不在电脑上，未提交给模型。请 /discard 后重新发送文件和说明。');
     if (this.scopeChains.has(scopeId) || this.isConversationBusy(scopeId)) {
-      return this.draftNotice(event, '当前聊天有任务运行中，草稿已保留。等待完成或 /stop 后，再 /send。');
+      let result = await this.steerDraft(draft);
+      for (let retry = 0; ['starting', 'idle'].includes(result.status) && this.scopeChains.has(scopeId) && retry < 3; retry++) {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        result = await this.steerDraft(draft);
+      }
+      if (result.status === 'accepted') {
+        this.inboundDrafts.delete(scopeId);
+        return chatMode ? { response: { type: 'steered', messages: [] } }
+          : this.draftNotice(event, '补充要求已追加到当前任务。');
+      }
+      if (result.status === 'idle' || result.status === 'unsupported' || result.status === 'starting') {
+        if (!this.scopeChains.has(scopeId) && result.status !== 'idle') {
+          return this.draftNotice(event, '当前任务暂时无法实时追加，内容已保留在草稿。任务结束后 /send，或先 /stop。');
+        }
+        // Queue only when input was definitely not accepted. Preserve uncertain failures.
+        this.inboundDrafts.delete(scopeId);
+        if (result.status !== 'idle') await this.draftNotice(event, '当前任务暂时无法实时追加，已排到本轮结束后处理。/stop 可停止并取消排队。');
+        return { event: { ...draft, metadata: { ...draft.metadata, explicitDraftSubmission: true, queuedAfterCurrent: true,
+          queuedWorkEpoch: this.queuedWorkEpoch.get(scopeId) ?? 0,
+        } } };
+      }
+      return this.draftNotice(event, '未能确认补充要求是否追加成功，内容已保留在草稿。请先等待回复；/pending 查看，确认需要时再 /send，避免重复提交。');
     }
     this.inboundDrafts.delete(scopeId);
     // Explicit submission bypasses the old attachment-only merge timer and command parser.
-    return { event: { ...draft, metadata: { ...draft.metadata, explicitDraftSubmission: true } } };
+    return { event: { ...draft, metadata: { ...draft.metadata,
+      explicitDraftSubmission: submitCommand || !chatMode || Boolean(draft.text.trim()),
+    } } };
   }
 
   private async routeConversationEvent(event: InboundTextEvent): Promise<InboundTextEvent | null> {
     if (!this.conversationRouter) return event;
     const result = this.conversationRouter.route(event, (scopeId) =>
-      this.scopeChains.has(scopeId) || this.pendingInboundMerges.has(scopeId) || Boolean(this.inboundDrafts.get(scopeId)) || this.isConversationBusy(scopeId),
+      this.scopeChains.has(scopeId) || this.pendingInboundMerges.has(scopeId) || this.isConversationBusy(scopeId),
+      (scopeId) => Boolean(this.inboundDrafts.get(scopeId)),
     );
     if (result.event) return result.event;
+    if (/^\/chats?\s+use\s/iu.test(event.text.trim()) && result.reply.content.startsWith('已切换')
+      && this.isChatModeForRecipient(event.externalScopeId)) return null;
     const delivery = await this.platformPlugin.sendText(result.reply);
     if (delivery && !delivery.success) throw new Error(delivery.error || 'Could not send the conversation command response.');
     return null;
@@ -501,6 +574,16 @@ export class WeixinBridgeRuntime {
     const scopeId = String(event?.externalScopeId ?? '');
     if (!scopeId) {
       return this.processInboundEvent(event);
+    }
+    if (event.metadata?.queuedAfterCurrent) {
+      return this.enqueueScopeWork(scopeId, async () => {
+        if (Number(event.metadata?.queuedWorkEpoch) !== (this.queuedWorkEpoch.get(scopeId) ?? 0)) {
+          const previous = this.inboundDrafts.get(scopeId);
+          this.inboundDrafts.set(previous ? mergeInboundEvents(event, previous) : event);
+          return { type: 'canceled', messages: [] };
+        }
+        return this.processInboundEvent(event);
+      });
     }
 
     const pending = this.pendingInboundMerges.get(scopeId) ?? null;
@@ -653,7 +736,7 @@ export class WeixinBridgeRuntime {
     try {
       const response = await this.bridgeCoordinator.handleInboundEvent(event, {
         onProgress: async (progress) => {
-          if (options.suppressProgressDelivery) {
+          if (options.suppressProgressDelivery || this.inboundDrafts.mode(event.externalScopeId) === 'chat') {
             return;
           }
           await this.handleProgressUpdate(event, streamState, progress);

@@ -55,6 +55,25 @@ function makePlugin(clientFactory: any, overrides: Record<string, unknown> = {})
   return new CodexProviderPlugin({ clientFactory: clientFactory as any, ...overrides });
 }
 
+test('CodexProviderPlugin steers text and file references on the existing turn', async () => {
+  const calls: any[] = [];
+  const plugin = makePlugin(() => ({ async start() {}, async steerTurn(params: any) {
+    calls.push(params); return { turnId: params.expectedTurnId };
+  } }));
+  const result = await plugin.steerTurn({ providerProfile: makeProfile(), threadId: 'thread-1', turnId: 'turn-1',
+    event: { platform: 'weixin', externalScopeId: 'owner', text: 'use this backup',
+      attachments: [{ kind: 'file', localPath: 'C:/inbound/backup.bak', fileName: 'backup.bak' }],
+      metadata: { weixin: { messageId: 'msg-42' } },
+    },
+  });
+  assert.equal(result.turnId, 'turn-1');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].expectedTurnId, 'turn-1');
+  assert.equal(calls[0].clientUserMessageId, 'msg-42');
+  assert.match(calls[0].input[0].text, /use this backup/);
+  assert.match(calls[0].input[0].text, /C:\/inbound\/backup.bak/);
+});
+
 function makePluginWithReviewRunner(clientFactory: any, reviewRunner: any) {
   return new CodexProviderPlugin({
     clientFactory: clientFactory as any,

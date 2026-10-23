@@ -249,6 +249,7 @@ async function runWeixinServe(args: string[]) {
     }) as any,
     locale: i18n.locale,
   } as any);
+  platformPlugin.shouldSendDownloadReceipt = (recipientId) => !bridgeRuntime.isChatModeForRecipient(recipientId);
   const embeddedNativeApiOptions = resolveEmbeddedCodexNativeApiOptions({
     env: process.env,
     defaultProviderProfileId: runtime.config.defaultProviderProfileId,

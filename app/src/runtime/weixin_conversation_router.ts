@@ -29,6 +29,12 @@ export type ConversationRoute =
 /** Logical scopes are separate from the authenticated WeChat recipient. */
 export class WeixinConversationRouter {
   private state: RouterState;
+  private chatModeResolver: (scopeId: string) => boolean = () => false;
+
+  setChatModeResolver(resolver: (scopeId: string) => boolean): void { this.chatModeResolver = resolver; }
+  activeScopeForRecipient(recipientId: string): string {
+    return this.active(this.ensureGroup(recipientId)).scopeId;
+  }
 
   constructor(private readonly filePath: string) {
     if (!fs.existsSync(filePath)) {
@@ -46,7 +52,8 @@ export class WeixinConversationRouter {
     }
   }
 
-  route(event: InboundTextEvent, isBusy: (scopeId: string) => boolean = () => false): ConversationRoute {
+  route(event: InboundTextEvent, isBusy: (scopeId: string) => boolean = () => false,
+    hasDraft: (scopeId: string) => boolean = () => false): ConversationRoute {
     const group = this.ensureGroup(event.externalScopeId);
     const text = String(event.text ?? '').trim();
     const management = /^\/(?:chat|chats)(?:\s+([\s\S]*))?$/iu.exec(text);
@@ -54,7 +61,7 @@ export class WeixinConversationRouter {
       const messageId = String((event.metadata?.weixin as any)?.messageId ?? '');
       const previous = messageId ? group.commandReceipts?.find((receipt) => receipt.messageId === messageId) : null;
       if (previous) return { reply: previous.reply };
-      const result = this.manage(group, event, management[1] ?? '', isBusy);
+      const result = this.manage(group, event, management[1] ?? '', isBusy, hasDraft);
       if (messageId && result.reply) {
         group.commandReceipts = [...(group.commandReceipts ?? []), { messageId, reply: result.reply }].slice(-128);
       }
@@ -93,7 +100,8 @@ export class WeixinConversationRouter {
     };
   }
 
-  private manage(group: ConversationGroup, event: InboundTextEvent, argumentsText: string, isBusy: (scopeId: string) => boolean): ConversationRoute {
+  private manage(group: ConversationGroup, event: InboundTextEvent, argumentsText: string, isBusy: (scopeId: string) => boolean,
+    hasDraft: (scopeId: string) => boolean): ConversationRoute {
     const targetedSend = /^send\s+(\S+)\s+([\s\S]+)$/iu.exec(argumentsText.trim());
     if (targetedSend) {
       const target = group.conversations.find((candidate) => candidate.name === targetedSend[1] && !candidate.archivedAt);
@@ -108,7 +116,7 @@ export class WeixinConversationRouter {
     switch (action.toLowerCase()) {
       case '':
       case 'help':
-        return this.reply(group, `当前聊天：${this.active(group).name}\n\n${HELP}`);
+        return this.reply(group, `当前聊天：${this.active(group).name} · ${this.chatModeResolver(group.activeScopeId) ? '聊天模式' : '工作模式'}\n\n${HELP}`);
       case 'list': {
         const archived = parts[0]?.toLowerCase() === 'archived';
         const pageText = parts[archived ? 1 : 0] ?? '1';
@@ -119,7 +127,7 @@ export class WeixinConversationRouter {
         const page = Number(pageText);
         if (page < 1 || page > pageCount) return this.reply(group, `页码应为 1–${pageCount}。`);
         const lines = conversations.slice((page - 1) * pageSize, page * pageSize).map((conversation, index) =>
-          `${(page - 1) * pageSize + index + 1}. ${conversation.name}${conversation.scopeId === group.activeScopeId ? ' ← 当前' : ''} · ${isBusy(conversation.scopeId) ? '运行中' : archived ? '已归档' : '空闲'}`,
+          `${(page - 1) * pageSize + index + 1}. ${conversation.name}${conversation.scopeId === group.activeScopeId ? ' ← 当前' : ''} · ${isBusy(conversation.scopeId) ? '运行中' : archived ? '已归档' : hasDraft(conversation.scopeId) ? '草稿待发' : '空闲'} · ${this.chatModeResolver(conversation.scopeId) ? '聊天模式' : '工作模式'}`,
         );
         return this.reply(group, `${archived ? '已归档聊天' : '聊天列表'} · ${page}/${pageCount} 页 · 共 ${conversations.length} 个\n${lines.join('\n') || '暂无聊天'}\n\n/chat new 名字 新建；/chat use 名字 切换。`);
       }
@@ -133,7 +141,7 @@ export class WeixinConversationRouter {
         };
         group.conversations.push(conversation);
         group.activeScopeId = conversation.scopeId;
-        return this.reply(group, `已新建并切换到「${nextName}」。发送消息开始独立对话，其他聊天的任务会继续运行。`);
+        return this.reply(group, `已新建「${nextName}」。工作模式用 /send 提交；聊天模式用 /mode chat 开启。`);
       }
       case 'use': {
         const conversation = group.conversations.find((candidate) => candidate.name === name && !candidate.archivedAt);
@@ -150,7 +158,7 @@ export class WeixinConversationRouter {
       case 'archive': {
         const conversation = group.conversations.find((candidate) => candidate.name === name && !candidate.archivedAt);
         if (!conversation) return this.reply(group, '找不到这个聊天，请用 /chat list 查看。');
-        if (isBusy(conversation.scopeId)) return this.reply(group, '这个聊天仍有任务或附件待处理，请等完成或停止后再归档。');
+        if (isBusy(conversation.scopeId) || hasDraft(conversation.scopeId)) return this.reply(group, '这个聊天仍有任务或草稿待处理，请等完成或 /discard 清空草稿后再归档。');
         const remaining = group.conversations.filter((candidate) => !candidate.archivedAt && candidate !== conversation);
         if (!remaining.length) return this.reply(group, '至少需要保留一个可用聊天。');
         conversation.archivedAt = Date.now();
@@ -172,7 +180,8 @@ export class WeixinConversationRouter {
     for (const group of this.state.groups) {
       const conversation = group.conversations.find((candidate) => candidate.scopeId === scopeId);
       if (conversation) {
-        return { recipientId: group.recipientId, label: group.conversations.length > 1 ? `【${conversation.name}】` : '' };
+        const immersive = group.activeScopeId === scopeId && this.chatModeResolver(scopeId);
+        return { recipientId: group.recipientId, label: group.conversations.length > 1 && !immersive ? `【${conversation.name}】` : '' };
       }
     }
     return { recipientId: scopeId, label: '' };

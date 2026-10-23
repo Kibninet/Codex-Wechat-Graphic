@@ -7,6 +7,18 @@ import test from 'node:test';
 import { CodexAppClient } from '../../../src/providers/codex/app_client.js';
 import type { CodexTurnInput } from '../../../src/providers/codex/app_client.js';
 
+test('CodexAppClient steers only the expected active turn and preserves message identity', async () => {
+  const client = new CodexAppClient({ codexCliBin: 'codex' });
+  client.request = async (method, params) => {
+    assert.equal(method, 'turn/steer');
+    assert.deepEqual(params, { threadId: 'thread-1', expectedTurnId: 'turn-1',
+      input: [{ type: 'text', text: 'keep the change small' }], clientUserMessageId: 'wechat-42' });
+    return { turnId: 'turn-1' };
+  };
+  assert.deepEqual(await client.steerTurn({ threadId: 'thread-1', expectedTurnId: 'turn-1',
+    input: [{ type: 'text', text: 'keep the change small' }], clientUserMessageId: 'wechat-42' }), { turnId: 'turn-1' });
+});
+
 function expectedProviderNativeImageArtifact(imagePath: string, sizeBytes: number) {
   return {
     kind: 'image',

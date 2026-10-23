@@ -502,6 +502,12 @@ export interface ProviderPluginContract {
     onTurnStarted?: ((meta: Record<string, unknown>) => Promise<void> | void) | null;
     onApprovalRequest?: ((request: ProviderApprovalRequest) => Promise<void> | void) | null;
   }): Promise<ProviderTurnResult>;
+  steerTurn?(params: {
+    providerProfile: ProviderProfile;
+    threadId: string;
+    turnId: string;
+    event: ProviderTurnEvent;
+  }): Promise<{ turnId: string }>;
   interruptTurn?(params: {
     providerProfile: ProviderProfile;
     threadId: string;

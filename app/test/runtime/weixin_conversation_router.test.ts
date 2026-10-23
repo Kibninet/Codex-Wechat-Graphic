@@ -28,6 +28,19 @@ function receipt(content: string) {
   return { success: true, deliveredCount: 1, deliveredText: content, failedIndex: null, failedText: '', error: '' };
 }
 
+test('immersive active chat hides its label while background replies retain their origin', (t) => {
+  const { router } = fixture(t);
+  router.route(event('/chat new alpha'));
+  const alpha = routed(router, 'hello').externalScopeId;
+  router.route(event('/chat new beta'));
+  const beta = routed(router, 'hello').externalScopeId;
+  router.setChatModeResolver(() => true);
+  assert.equal(router.deliveryTarget(beta).label, '');
+  assert.equal(router.deliveryTarget(alpha).label, '【alpha】');
+  assert.match(router.route(event('/chat list'), () => false, scope => scope === beta).reply!.content, /草稿待发 · 聊天模式/);
+  assert.match(router.route(event('/chat archive beta'), () => false, scope => scope === beta).reply!.content, /草稿待处理/);
+});
+
 function deferred<T = void>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
   const promise = new Promise<T>((accept) => { resolve = accept; });

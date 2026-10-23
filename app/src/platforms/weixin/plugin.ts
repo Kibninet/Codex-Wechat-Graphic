@@ -140,6 +140,7 @@ export class WeixinPlatformPlugin implements Pick<PlatformPluginContract, 'id' |
 
   id: string;
   mediaDownloadOptions: MediaDownloadOptions;
+  shouldSendDownloadReceipt: (recipientId: string) => boolean = () => true;
   displayName: string;
   accountStore: WeixinAccountStore;
   config: WeixinConfig;
@@ -207,7 +208,7 @@ export class WeixinPlatformPlugin implements Pick<PlatformPluginContract, 'id' |
       }
     }
     const files = (payload.item_list ?? []).filter((item) => item.type === MessageItemType.FILE);
-    if (files.length) {
+    if (files.length && this.shouldSendDownloadReceipt(scope.externalScopeId)) {
       const content = this.i18n.locale.startsWith('en')
         ? `Receiving ${files.length} file(s) on the computer. Large downloads may take a few minutes; a saved or failed notice will follow.`
         : `正在将 ${files.length} 个文件接收到电脑。大文件可能需要几分钟，完成或失败后会提示。`;

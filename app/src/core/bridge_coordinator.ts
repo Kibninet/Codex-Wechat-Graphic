@@ -1050,6 +1050,28 @@ export class BridgeCoordinator {
     this.localeOverridesByScope.set(formatPlatformScopeKey(scopeRef.platform, scopeRef.externalScopeId), normalized);
   }
 
+  async steerInboundEvent(event): Promise<{ status: 'accepted' | 'idle' | 'starting' | 'unsupported' | 'failed' }> {
+    if (inboundAttachmentFailure(event)) return { status: 'failed' };
+    const active = this.activeTurns?.resolveScopeTurn(toScopeRef(event));
+    if (!active) return { status: 'idle' };
+    if (!active.providerProfileId || !active.threadId || !active.turnId) return { status: 'starting' };
+    const profile = this.requireProviderProfile(active.providerProfileId);
+    const plugin = this.providerRegistry.getProvider(profile.providerKind);
+    if (typeof plugin?.steerTurn !== 'function') return { status: 'unsupported' };
+    const expectedTurnId = active.turnId;
+    try {
+      const result = await plugin.steerTurn({ providerProfile: profile, threadId: active.threadId, turnId: expectedTurnId, event });
+      return { status: result?.turnId === expectedTurnId ? 'accepted' : 'failed' };
+    } catch (error) {
+      // Only an explicit no-active-turn response allows starting a subsequent turn.
+      // Network failures may have been accepted by the server; never auto-resend them.
+      const message = error instanceof Error ? error.message : String(error);
+      if (/method not found|unknown method|unsupported method/i.test(message)) return { status: 'unsupported' };
+      if (/no active turn|no turn (?:is )?(?:currently )?(?:running|in progress)|not an active turn/i.test(message)) return { status: 'idle' };
+      return { status: 'failed' };
+    }
+  }
+
   async handleInboundEvent(event, options = {}) {
     const scopeRef = toScopeRef(event);
     const locale = this.resolveLocaleForEvent(scopeRef, event);

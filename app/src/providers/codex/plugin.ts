@@ -438,6 +438,18 @@ export class CodexProviderPlugin {
     });
   }
 
+  async steerTurn({ providerProfile, threadId, turnId, event }: {
+    providerProfile: ProviderProfile; threadId: string; turnId: string; event: InboundTextEvent;
+  }): Promise<{ turnId: string }> {
+    const client = await this.ensureClient(providerProfile);
+    const messageId = String((event.metadata?.weixin as any)?.messageId ?? '');
+    return client.steerTurn({
+      threadId, expectedTurnId: turnId,
+      input: buildCodexTurnInput(event, event.text),
+      ...(messageId ? { clientUserMessageId: messageId } : {}),
+    });
+  }
+
   async interruptTurn({
     providerProfile,
     threadId,
