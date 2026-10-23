@@ -1,0 +1,11 @@
+# 来源与第三方组件
+
+Codex-Wechat 使用的组件、源代码及许可信息如下。
+
+- 桥接上游：https://github.com/Gan-Xing/CodexBridge 。源代码保留在 app/。该源代码快照未附独立 LICENSE 文件，本包不替上游授予额外许可。
+- Codex CLI：来自官方 npm @openai/codex 平台包，元数据声明 Apache-2.0，版本及许可证位于 runtime/codex/。源码：https://github.com/openai/codex 。
+- Node.js：版本见 BUILDINFO.json，该版本官方许可文本保存在 runtime/node/LICENSE.txt。来源：https://github.com/nodejs/node/blob/v24.20.0/LICENSE 。
+- npm 依赖：原有 package.json、LICENSE、NOTICE 等文件保留在 app/node_modules/。
+- FFmpeg / FFprobe：原有许可和构建说明保留在各自包目录。构建与源代码信息：https://github.com/eugeneware/ffmpeg-static 、https://github.com/joshwnj/ffprobe-static 、https://ffmpeg.org/ 。
+
+本发行包未对上游整体重新指定许可证。各组件继续适用自己的许可与署名要求。

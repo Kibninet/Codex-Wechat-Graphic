@@ -1,0 +1,4 @@
+Source code is public. This repository preserves its upstream history.
+The imported application snapshot has no repository-wide open-source license.
+No MIT/Apache license is granted over the imported application by this publication.
+Bundled dependencies retain their own licenses and notices.
