@@ -235,6 +235,7 @@ async function runWeixinServe(args: string[]) {
   });
   const platformPlugin = runtime.registry.getPlatform('weixin') as WeixinPlatformPlugin;
   const bridgeRuntime = new WeixinBridgeRuntime({
+    inboundDraftsPath: path.join(stateDir, 'weixin-inbound-drafts.json'),
     platformPlugin,
     bridgeCoordinator: runtime.services.bridgeCoordinator,
     automationJobs: runtime.services.automationJobs,

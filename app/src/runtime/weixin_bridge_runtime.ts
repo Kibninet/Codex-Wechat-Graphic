@@ -1,5 +1,9 @@
 import { parseSlashCommand } from '../core/command_parser.js';
 import { isAgentCommandEnabled } from '../core/command_availability.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import { inboundAttachmentFailure } from '../core/inbound_attachment_feedback.js';
+import { WeixinInboundDrafts } from './weixin_inbound_drafts.js';
 import { writeSequencedDebugLog } from '../core/sequenced_stderr.js';
 import { WeixinPoller } from '../platforms/weixin/poller.js';
 import { createI18n, type Translator } from '../i18n/index.js';
@@ -137,6 +141,8 @@ interface PendingScopeNotice {
 }
 
 interface WeixinBridgeRuntimeOptions {
+  requireSendCommand?: boolean;
+  inboundDraftsPath?: string | null;
   platformPlugin: PlatformPluginLike;
   bridgeCoordinator: BridgeCoordinatorLike;
   automationJobs?: any;
@@ -157,6 +163,8 @@ interface WeixinBridgeRuntimeOptions {
 }
 
 export class WeixinBridgeRuntime {
+  requireSendCommand: boolean;
+  inboundDrafts: WeixinInboundDrafts;
   static readonly NOTICE_COOLDOWN_MS = 30_000;
   static readonly DEFAULT_TYPING_KEEPALIVE_MS = 8_000;
   static readonly PREVIEW_MIN_TARGET_BYTES = 500;
@@ -228,6 +236,8 @@ export class WeixinBridgeRuntime {
     previewIntervalMs = 3000,
     streamFinalAnswers = false,
     conversationRouter = null,
+    requireSendCommand = true,
+    inboundDraftsPath = null,
     isConversationBusy = () => false,
     typingKeepaliveMs = WeixinBridgeRuntime.DEFAULT_TYPING_KEEPALIVE_MS,
     inboundAttachmentMergeWindowMs = 3000,
@@ -246,6 +256,8 @@ export class WeixinBridgeRuntime {
     this.previewIntervalMs = previewIntervalMs;
     this.streamFinalAnswers = streamFinalAnswers;
     this.conversationRouter = conversationRouter;
+    this.requireSendCommand = requireSendCommand;
+    this.inboundDrafts = new WeixinInboundDrafts(inboundDraftsPath);
     this.isConversationBusy = isConversationBusy;
     this.typingKeepaliveMs = typingKeepaliveMs;
     this.inboundAttachmentMergeWindowMs = inboundAttachmentMergeWindowMs;
@@ -316,7 +328,9 @@ export class WeixinBridgeRuntime {
       return { type: 'local_noop' };
     }
     const routedEvent = await this.routeConversationEvent(event);
-    return routedEvent ? this.scheduleInboundEvent(routedEvent) : { type: 'local_command' };
+    if (!routedEvent) return { type: 'local_command' };
+    const prepared = await this.prepareDraftInput(routedEvent);
+    return prepared.event ? this.scheduleInboundEvent(prepared.event) : prepared.response!;
   }
 
   async dispatchInboundEvent(event: InboundTextEvent): Promise<any> {
@@ -329,8 +343,10 @@ export class WeixinBridgeRuntime {
     }
     const routedEvent = await this.routeConversationEvent(event);
     if (!routedEvent) return undefined;
-    event = routedEvent;
-    const command = parseSlashCommand(String(event?.text ?? ''));
+    const prepared = await this.prepareDraftInput(routedEvent);
+    if (!prepared.event) return prepared.response;
+    event = prepared.event;
+    const command = event.metadata?.explicitDraftSubmission ? null : parseSlashCommand(String(event?.text ?? ''));
     if (command) {
       await this.flushPendingInboundMerge(event.externalScopeId);
       if (shouldScheduleSlashCommand(command)) {
@@ -372,10 +388,85 @@ export class WeixinBridgeRuntime {
     await Promise.allSettled(tasks);
   }
 
+  private async draftNotice(event: InboundTextEvent, content: string): Promise<{ response: RuntimeResponse }> {
+    const delivery = await this.sendTextWithRetry({ externalScopeId: event.externalScopeId, content });
+    if (!delivery.success) throw new Error(delivery.error || 'Could not deliver draft notice.');
+    return { response: { type: 'draft', messages: [{ text: content }] } };
+  }
+
+  private draftSummary(event?: InboundTextEvent, includePreview = true): string {
+    if (!event) return '当前草稿为空。先发文字或文件，再用 /send 提交。';
+    const names = (event.attachments ?? []).map((item) => path.basename(item.fileName || item.localPath));
+    const preview = event.text.trim();
+    return [`草稿：${preview.length} 字，${names.length} 个附件。`,
+      includePreview && preview ? `文字：${preview.slice(0, 500)}${preview.length > 500 ? '…' : ''}` : '',
+      names.length ? `附件：${names.join('、')}` : '',
+      '发送 /send 提交；/send 补充说明 可一起提交；/discard 清空。'].filter(Boolean).join('\n');
+  }
+
+  private async prepareDraftInput(event: InboundTextEvent): Promise<{ event?: InboundTextEvent; response?: RuntimeResponse }> {
+    const failure = inboundAttachmentFailure(event, this.i18n.locale);
+    const scopeId = event.externalScopeId;
+    if (!this.requireSendCommand) {
+      return failure ? this.draftNotice(event, failure) : { event };
+    }
+    const command = parseSlashCommand(event.text);
+    const previous = this.inboundDrafts.get(scopeId);
+    if (command?.name === 'send' && ['-h', '--help'].includes(command.args[0] ?? '')) {
+      return this.draftNotice(event, '先发送文字、图片或文件保存到草稿，再单独发送 /send 一并提交。也可 /send 补充说明。/pending 查看，/discard 清空。');
+    }
+    if (command?.name === 'pending') return this.draftNotice(event, this.draftSummary(previous));
+    if (command?.name === 'discard') {
+      this.inboundDrafts.delete(scopeId);
+      return this.draftNotice(event, '已清空当前聊天的草稿。');
+    }
+    if (command && command.name !== 'send') {
+      return failure ? this.draftNotice(event, failure) : { event };
+    }
+    const input = command?.name === 'send'
+      ? { ...event, text: event.text.replace(/^\s*\/send\b\s*/iu, '') }
+      : event;
+    const incomingId = String((event.metadata?.weixin as any)?.messageId ?? '');
+    const ids = (previous?.metadata?.draftMessageIds ?? []) as string[];
+    const duplicate = incomingId && ids.includes(incomingId);
+    let draft = duplicate ? previous! : previous ? mergeInboundEvents(previous, input) : input;
+    const newErrorCount = ((input.metadata?.weixin as any)?.attachmentErrors ?? []).length;
+    const failedCount = duplicate ? Number(previous?.metadata?.draftFailedAttachments ?? 0)
+      : Math.max(0, Number(previous?.metadata?.draftFailedAttachments ?? 0)
+        - (failure ? 0 : (input.attachments?.length ?? 0))) + newErrorCount;
+    // Successful replacement transfers clear their markers; text alone cannot hide them.
+    if (!failure && input.attachments?.length && failedCount === 0) {
+      const weixin = draft.metadata?.weixin as Record<string, unknown> | undefined;
+      if (weixin) draft = { ...draft, metadata: { ...draft.metadata, weixin: { ...weixin, attachmentErrors: [] } } };
+    }
+    draft = { ...draft, metadata: { ...draft.metadata, draftFailedAttachments: failedCount,
+      draftMessageIds: [...new Set([...ids, ...(incomingId ? [incomingId] : [])])].slice(-256) } };
+    if (draft.text.length > 100_000 || (draft.attachments?.length ?? 0) > 20) {
+      return this.draftNotice(event, '单轮草稿最多 100000 字、20 个附件。原草稿已保留，请先 /send 或 /discard。');
+    }
+    this.inboundDrafts.set(draft);
+    if (failure) return this.draftNotice(event, `${failure}\n草稿已保留；请重发失败的附件，或 /discard 清空后重新准备。`);
+    if (command?.name !== 'send') return this.draftNotice(event, `已保存到当前聊天草稿，尚未提交给模型。\n${this.draftSummary(draft, false)}`);
+    const draftFailure = inboundAttachmentFailure(draft, this.i18n.locale);
+    if (draftFailure) return this.draftNotice(event, `${draftFailure}\n草稿保留，请重发附件或 /discard。`);
+    if (!draft.text.trim() && !draft.attachments?.length) {
+      this.inboundDrafts.delete(scopeId);
+      return this.draftNotice(event, '当前草稿为空。先发文字或文件，再用 /send 提交。');
+    }
+    const missing = (draft.attachments ?? []).some((item) => !fs.existsSync(item.localPath));
+    if (missing) return this.draftNotice(event, '草稿中的附件已不在电脑上，未提交给模型。请 /discard 后重新发送文件和说明。');
+    if (this.scopeChains.has(scopeId) || this.isConversationBusy(scopeId)) {
+      return this.draftNotice(event, '当前聊天有任务运行中，草稿已保留。等待完成或 /stop 后，再 /send。');
+    }
+    this.inboundDrafts.delete(scopeId);
+    // Explicit submission bypasses the old attachment-only merge timer and command parser.
+    return { event: { ...draft, metadata: { ...draft.metadata, explicitDraftSubmission: true } } };
+  }
+
   private async routeConversationEvent(event: InboundTextEvent): Promise<InboundTextEvent | null> {
     if (!this.conversationRouter) return event;
     const result = this.conversationRouter.route(event, (scopeId) =>
-      this.scopeChains.has(scopeId) || this.pendingInboundMerges.has(scopeId) || this.isConversationBusy(scopeId),
+      this.scopeChains.has(scopeId) || this.pendingInboundMerges.has(scopeId) || Boolean(this.inboundDrafts.get(scopeId)) || this.isConversationBusy(scopeId),
     );
     if (result.event) return result.event;
     const delivery = await this.platformPlugin.sendText(result.reply);
@@ -2230,7 +2321,7 @@ function shouldScheduleSlashCommand(command: { name?: string | null; args?: stri
 }
 
 function shouldDelayInboundEvent(event: InboundTextEvent): boolean {
-  return !parseSlashCommand(String(event?.text ?? ''))
+  return !event.metadata?.explicitDraftSubmission && !parseSlashCommand(String(event?.text ?? ''))
     && !isLocalKeepalivePulse(event)
     && hasAttachments(event)
     && !String(event?.text ?? '').trim();

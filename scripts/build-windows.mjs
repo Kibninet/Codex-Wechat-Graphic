@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const version = '0.3.0';
+const version = '0.3.1';
 if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('Build on Windows x64 with Node.js 24 or later.');
 if (Number(process.versions.node.split('.')[0]) < 24) throw new Error('Node.js 24 or later is required.');
 const outIndex = process.argv.indexOf('--output');

@@ -8,6 +8,40 @@ import { loadWeixinConfig } from '../../../src/platforms/weixin/config.js';
 import { _resetContextTokenStoreForTest } from '../../../src/platforms/weixin/official/context_tokens.js';
 import { _resetSessionGuardForTest } from '../../../src/platforms/weixin/official/session_guard.js';
 import { WeixinPlatformPlugin } from '../../../src/platforms/weixin/plugin.js';
+import { encryptAesEcb } from '../../../src/platforms/weixin/official/cdn/aes_ecb.js';
+
+test('file receipt uses the new context token before download, saves BAK paths and reports safe failures', async (t) => {
+  const root = makeTempAccountsDir();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const accountStore = new WeixinAccountStore({ rootDir: path.join(root, 'accounts') });
+  const key = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
+  const plain = Buffer.from('synthetic backup');
+  const notices: any[] = [];
+  const plugin = makePlugin({ accountStore,
+    config: {
+      enabled: true, accountId: 'bot', token: 'test-token',
+      baseUrl: 'https://ilink.example', cdnBaseUrl: 'https://cdn.example',
+      dmPolicy: 'open', groupPolicy: 'disabled', allowFrom: [], groupAllowFrom: [],
+      stateDir: root, accountsDir: path.join(root, 'accounts'), maxMessageLength: 4000,
+    },
+    mediaDownloadOptions: { fetchImpl: async () => {
+      assert.equal(accountStore.getContextToken('bot', 'owner'), 'new-context');
+      assert.equal(notices.length, 1);
+      return new Response(encryptAesEcb(plain, key));
+    } },
+  });
+  plugin.sendText = async (notice: any) => { notices.push(notice); return { success: true }; };
+  const event = await plugin.normalizeInboundEvent({ from_user_id: 'owner', to_user_id: 'bot', context_token: 'new-context',
+    item_list: [{ type: 4, file_item: { file_name: 'backup.bak', len: String(plain.length),
+      media: { full_url: 'https://cdn.example/file', aes_key: key.toString('base64') } } }],
+  });
+  assert.equal(event.attachments.length, 1);
+  assert.match(event.attachments[0].localPath, /\.bak$/);
+  assert.deepEqual(fs.readFileSync(event.attachments[0].localPath), plain);
+  const failed = await plugin.normalizeInboundEvent({ from_user_id: 'owner', to_user_id: 'bot', item_list: [{ type: 4 }] });
+  assert.deepEqual(failed.metadata.weixin.attachmentErrors, ['weixin_media:unavailable']);
+  assert.equal(failed.attachments.length, 0);
+});
 
 function makeTempAccountsDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'codexbridge-weixin-'));

@@ -7,6 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { formatPlatformScopeKey } from './contracts.js';
 import { isAgentCommandEnabled } from './command_availability.js';
 import { parseSlashCommand } from './command_parser.js';
+import { inboundAttachmentFailure } from './inbound_attachment_feedback.js';
 import { WEIXIN_CONVERSATION_HELP } from './weixin_conversation_help.js';
 import { NotFoundError } from './errors.js';
 import {
@@ -1056,10 +1057,12 @@ export class BridgeCoordinator {
   }
 
   async handleInboundEventWithLocale(event, options = {}) {
+    const attachmentFailure = inboundAttachmentFailure(event, this.currentI18n.locale);
+    if (attachmentFailure) return messageResponse([attachmentFailure], this.buildScopedSessionMeta(event));
     if (!parseSlashCommand(event.text) && this.hasPendingInstructionsCapture(event)) {
       return this.handlePendingInstructionsCapture(event);
     }
-    const command = parseSlashCommand(event.text);
+    const command = event.metadata?.explicitDraftSubmission ? null : parseSlashCommand(event.text);
     if (command) {
       return this.handleCommand(event, command, options);
     }

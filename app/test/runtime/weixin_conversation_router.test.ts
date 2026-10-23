@@ -223,6 +223,7 @@ test('runtime runs named chats concurrently and labels late replies with their o
     async sendText(payload: any) { sent.push(payload); return receipt(payload.content); },
   }, router);
   const runtime = new WeixinBridgeRuntime({
+    requireSendCommand: false,
     platformPlugin: plugin,
     conversationRouter: router,
     previewIntervalMs: 0,

@@ -1058,6 +1058,29 @@ async function fullyConfirmLatestAgentJob(runtime, externalScopeId: string) {
   };
 }
 
+test('attachment download failures do not create provider threads or empty model turns', async () => {
+  const { runtime, openai, compatible } = makeRuntime();
+  const result = await runtime.services.bridgeCoordinator.handleInboundEvent({
+    platform: 'weixin', externalScopeId: 'owner', text: '',
+    metadata: { weixin: { attachmentErrors: ['weixin_media:timeout', 'https://signed.example/SECRET'] } },
+  });
+  assert.match(result.messages[0]?.text ?? '', /附件接收失败/);
+  assert.doesNotMatch(result.messages[0]?.text ?? '', /SECRET|signed.example/);
+  assert.equal(openai.startThreadCalls.length, 0);
+  assert.equal(openai.startTurnCalls.length, 0);
+  assert.equal(compatible.startTurnCalls.length, 0);
+});
+
+test('explicit drafts beginning with a slash are submitted as user text', async () => {
+  const { runtime, openai } = makeRuntime();
+  await runtime.services.bridgeCoordinator.handleInboundEvent({
+    platform: 'weixin', externalScopeId: 'owner', text: '/a sample/path',
+    metadata: { explicitDraftSubmission: true },
+  });
+  assert.equal(openai.startTurnCalls.length, 1);
+  assert.equal(openai.startTurnCalls[0].inputText, '/a sample/path');
+});
+
 test('bridge coordinator creates a default-provider session for normal text and starts a turn', async () => {
   const { runtime, openai } = makeRuntime();
 

@@ -1,4 +1,7 @@
 export const WEIXIN_CONVERSATION_HELP = [
+  '/send [补充说明] — 将当前聊天草稿里的文字和附件一起提交给模型',
+  '/pending — 查看当前聊天的待发送草稿',
+  '/discard — 清空当前聊天草稿',
   '/chat new 名字 — 新建并切换（省略名字可自动命名）',
   '/chat list [页码] — 分页查看聊天和运行状态',
   '/chat use 名字 — 切换聊天，已有任务继续运行',
@@ -9,5 +12,5 @@ export const WEIXIN_CONVERSATION_HELP = [
   '/chat restore 名字 — 恢复已归档聊天',
   '@名字 内容 — 向指定聊天发消息，不切换当前聊天',
   '@名字 /stop — 停止指定聊天的任务',
-  '普通消息及图片、文件发给当前聊天。/new 会重建当前聊天的线程；增加聊天请用 /chat new。',
+  '普通文字及图片、文件先保存到当前聊天草稿；只有 /send 才提交。每个聊天草稿独立，重启后保留。其他斜杠管理命令立即执行。/new 会重建当前聊天的线程；增加聊天请用 /chat new。',
 ].join('\n');

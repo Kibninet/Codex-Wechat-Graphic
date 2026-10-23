@@ -27,6 +27,8 @@ async function withEnvOverride<T>(
 }
 
 interface RuntimeHarnessOptions {
+  requireSendCommand?: boolean;
+  inboundDraftsPath?: string;
   coordinator: any;
   automationJobs?: any;
   agentJobs?: any;
@@ -46,6 +48,8 @@ interface RuntimeHarnessOptions {
 }
 
 function makeRuntime({
+  requireSendCommand = false,
+  inboundDraftsPath,
   coordinator,
   automationJobs = null,
   agentJobs = null,
@@ -64,6 +68,8 @@ function makeRuntime({
   pollEvents = null,
 }: RuntimeHarnessOptions) {
   return new WeixinBridgeRuntime({
+    requireSendCommand,
+    inboundDraftsPath,
     platformPlugin: {
       async start() {},
       async stop() {},

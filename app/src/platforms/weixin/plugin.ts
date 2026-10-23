@@ -26,6 +26,7 @@ import {
 } from './official/session_guard.js';
 import { WeixinConfigManager } from './official/config_cache.js';
 import { downloadMediaFromItem } from './official/media/media_download.js';
+import { WeixinMediaError, type MediaDownloadOptions } from './official/cdn/pic_decrypt.js';
 import { getExtensionFromMime, getMimeFromFilename } from './official/media/mime.js';
 import { buildTextMessageReq } from './official/send.js';
 import { isWeixinSendResponseError } from './official/send.js';
@@ -99,6 +100,7 @@ interface WeixinTypingDelivery extends PlatformDeliveryRequest {
 }
 
 interface WeixinPlatformPluginOptions {
+  mediaDownloadOptions?: MediaDownloadOptions;
   config?: WeixinConfig;
   accountStore?: WeixinAccountStore;
   chunkIntervalMs?: number;
@@ -109,6 +111,7 @@ interface WeixinPlatformPluginOptions {
 
 export class WeixinPlatformPlugin implements Pick<PlatformPluginContract, 'id' | 'displayName' | 'start' | 'stop' | 'normalizeInboundEvent' | 'buildTextDeliveries' | 'sendText' | 'sendTyping' | 'sendMedia'> {
   constructor({
+    mediaDownloadOptions = {},
     config,
     accountStore,
     chunkIntervalMs = 3000,
@@ -117,6 +120,7 @@ export class WeixinPlatformPlugin implements Pick<PlatformPluginContract, 'id' |
     locale = null,
   }: WeixinPlatformPluginOptions = {}) {
     this.i18n = createI18n(locale);
+    this.mediaDownloadOptions = mediaDownloadOptions;
     this.id = 'weixin';
     this.displayName = 'WeChat';
     this.accountStore = accountStore ?? new WeixinAccountStore();
@@ -135,6 +139,7 @@ export class WeixinPlatformPlugin implements Pick<PlatformPluginContract, 'id' |
   }
 
   id: string;
+  mediaDownloadOptions: MediaDownloadOptions;
   displayName: string;
   accountStore: WeixinAccountStore;
   config: WeixinConfig;
@@ -193,6 +198,21 @@ export class WeixinPlatformPlugin implements Pick<PlatformPluginContract, 'id' |
       });
       return null;
     }
+    // Download receipts need the context token before a potentially slow transfer.
+    const contextToken = stringValue(payload.context_token);
+    if (contextToken) {
+      setStoredContextToken(this.config.accountsDir, this.config.accountId, senderId, contextToken);
+      if (scope.externalScopeId !== senderId) {
+        setStoredContextToken(this.config.accountsDir, this.config.accountId, scope.externalScopeId, contextToken);
+      }
+    }
+    const files = (payload.item_list ?? []).filter((item) => item.type === MessageItemType.FILE);
+    if (files.length) {
+      const content = this.i18n.locale.startsWith('en')
+        ? `Receiving ${files.length} file(s) on the computer. Large downloads may take a few minutes; a saved or failed notice will follow.`
+        : `正在将 ${files.length} 个文件接收到电脑。大文件可能需要几分钟，完成或失败后会提示。`;
+      void this.sendText({ externalScopeId: scope.externalScopeId, content }).catch(() => {});
+    }
     const text = extractText(payload.item_list ?? []);
     const { attachments, errors: attachmentErrors } = await this.downloadInboundAttachments(payload);
     if (!text && attachments.length === 0 && attachmentErrors.length === 0) {
@@ -204,13 +224,6 @@ export class WeixinPlatformPlugin implements Pick<PlatformPluginContract, 'id' |
         itemTypes: Array.isArray(payload.item_list) ? payload.item_list.map((item) => Number(item?.type)) : [],
       });
       return null;
-    }
-    const contextToken = stringValue(payload.context_token);
-    if (contextToken) {
-      setStoredContextToken(this.config.accountsDir, this.config.accountId, senderId, contextToken);
-      if (scope.externalScopeId !== senderId) {
-        setStoredContextToken(this.config.accountsDir, this.config.accountId, scope.externalScopeId, contextToken);
-      }
     }
     debugWeixin('accept_message', {
       scopeId: scope.externalScopeId,
@@ -368,10 +381,11 @@ export class WeixinPlatformPlugin implements Pick<PlatformPluginContract, 'id' |
           saveMedia: async (buffer, contentType, subdir, maxBytes, originalFilename) =>
             this.saveInboundMedia(buffer, contentType, subdir, maxBytes, originalFilename),
           label: `weixin message ${stringValue(payload.message_id) ?? crypto.randomUUID()}`,
+          downloadOptions: this.mediaDownloadOptions,
         });
         attachments.push(...convertDownloadedMediaToAttachments(item, media));
       } catch (error) {
-        errors.push(error instanceof Error ? error.message : String(error));
+        errors.push(error instanceof WeixinMediaError ? error.message : 'weixin_media:save_failed');
       }
     }
     return { attachments, errors };
