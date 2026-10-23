@@ -20,3 +20,11 @@ weixin-conversations.json
 /weixin/
 /codex-home/
 /app/local-*.ts
+.apksigning/
+app/apps/web/.next/
+app/apps/web/public/mobile/
+app/apps/web/public/downloads/
+app/apps/mobile-ui/vendor/
+*.tsbuildinfo
+*.jks
+*.keystore

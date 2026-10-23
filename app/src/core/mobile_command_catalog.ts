@@ -1,0 +1,72 @@
+export type MobileField = {key:string;label:string;type?:'text'|'textarea'|'select';required?:boolean;options?:string[];pattern?:string;placeholder?:string};
+export type MobileCommand = {id:string;group:string;label:string;template:string;fields:MobileField[];delivery:'panel'|'wechat';confirm?:string};
+const field=(key:string,label:string,extra:Partial<MobileField>={}):MobileField=>({key,label,required:true,...extra});
+const text=field('text','内容或要求',{type:'textarea'}), target=field('target','列表编号或名称'), onoff=field('value','设置',{type:'select',options:['on','off']});
+const entries:MobileCommand[]=[];
+function add(id:string,group:string,label:string,template:string,fields:MobileField[]=[],extra:Partial<MobileCommand>={}){entries.push({id,group,label,template,fields,delivery:'panel',...extra});}
+add('status','状态与连接','当前聊天状态','/status');add('usage','状态与连接','额度与用量','/usage');add('help','状态与连接','功能帮助','/helps',[/* no raw command needed */]);
+add('login-list','状态与连接','已保存的 Codex 账号','/login list');
+add('login-start','状态与连接','登录 Codex','/login',[],{confirm:'将在电脑开始官方 Codex 登录流程。'});
+add('login-switch','状态与连接','切换 Codex 账号','/login {target}',[target],{confirm:'会更改电脑桥接使用的账号。'});
+add('login-cancel','状态与连接','取消待完成的登录','/login cancel');
+for(const [id,label] of [['reconnect','重连模型连接'],['restart','重启微信桥接'],['retry','重试上一轮']] as const)add(id,'状态与连接',label,'/'+id,[],{delivery:id==='retry'?'wechat':'panel',confirm:id==='restart'?'会重启原微信桥接；其他聊天有任务时原服务会阻止重启。':'会重新执行此操作，请确认需要。'});
+add('provider-list','聊天设置','查看模型提供方','/provider');add('provider-set','聊天设置','切换模型提供方','/provider {target}',[target]);
+add('models','聊天设置','可用模型列表','/models');add('model-current','聊天设置','查看当前模型','/model');
+add('model-set','聊天设置','设置模型与思考强度','/model {target} {effort}',[target,field('effort','思考强度（可留空）',{required:false})]);
+add('permissions','聊天设置','查看权限设置','/permissions');add('permissions-set','聊天设置','修改权限','/permissions {value}',[field('value','权限',{type:'select',options:['default-permissions','auto-review','full-access','custom']})],{confirm:'权限设置影响此微信聊天的后续操作；完全访问允许工具修改电脑文件与执行命令。'});
+add('plan','聊天设置','查看计划模式','/plan');add('plan-set','聊天设置','计划模式开关','/plan {value}',[onoff]);
+add('personality','聊天设置','查看回答风格','/personality');add('personality-set','聊天设置','回答风格','/personality {value}',[field('value','风格',{type:'select',options:['friendly','pragmatic','none']})]);
+add('language','聊天设置','回答语言','/lang {value}',[field('value','语言',{type:'select',options:['zh','en']})]);
+add('fast-on','聊天设置','开启快速模式','/fast');add('fast-off','聊天设置','关闭快速模式','/fast off');
+add('new-thread','线程与历史','切换项目目录 / 新线程','/new {cwd}',[field('cwd','电脑上的项目目录（留空沿用当前目录）',{required:false,placeholder:'填写电脑上已存在的文件夹完整路径'})],{confirm:'会为当前微信聊天在指定目录创建新线程，聊天名称不变。旧线程历史保留，但不会自动复制到新线程；请把续接说明放在新目录。'});
+for(const [id,label,cmd] of [['thread-list','浏览已有线程','/threads'],['thread-next','下一页线程','/next'],['thread-prev','上一页线程','/prev']] as const)add(id,'线程与历史',label,cmd);
+add('thread-search','线程与历史','搜索线程','/search {text}',[text],{delivery:'wechat'});
+add('thread-peek','线程与历史','预览线程','/peek {target}',[target]);
+add('thread-open','线程与历史','绑定已有线程','/open {target}',[target],{confirm:'会改变所选微信聊天绑定的 Codex 线程。'});
+add('thread-rename','线程与历史','修改线程别名','/rename {target} {text}',[target,field('text','新别名')]);
+for(const [id,label] of [['del','归档线程'],['restore','恢复线程'],['pin','置顶线程'],['unpin','取消置顶']] as const)add('thread-'+id,'线程与历史',label,`/threads ${id} {target}`,[target]);
+for(const value of ['confirm','cancel'])add('thread-'+value,'线程与历史',value==='confirm'?'确认线程操作草案':'取消线程操作草案','/threads '+value);
+add('instructions','自定义指令','查看指令文件','/instructions');
+for(const [id,label] of [['set','准备替换指令'],['edit','修改待确认指令']] as const)add('instructions-'+id,'自定义指令',label,`/instructions ${id} {text}`,[text]);
+for(const [id,label] of [['ok','确认写入指令文件'],['cancel','取消指令草稿'],['clear','准备清空指令']] as const)add('instructions-'+id,'自定义指令',label,'/instructions '+id,[],{confirm:id==='ok'?'将写入原指令文件并刷新会话。':undefined});
+add('review','代码工作','审查未提交改动','/review',[],{delivery:'wechat'});
+for(const [id,label,key] of [['base','审查相对分支的改动','target'],['commit','审查指定提交','target'],['custom','自定义审查要求','text']] as const)add('review-'+id,'代码工作',label,`/review ${id} {${key}}`,[key==='text'?text:target],{delivery:'wechat'});
+add('compact','代码工作','压缩当前上下文','/compact',[],{delivery:'wechat'});
+add('use','代码工作','调用技能或插件工作','/use {text}',[text],{delivery:'wechat'});
+for(const [cmd,group,label] of [['skills','技能与插件','技能'],['plugins','技能与插件','插件'],['apps','技能与插件','连接应用'],['mcp','技能与插件','MCP 服务']] as const){
+  add(cmd,group,'查看'+label,'/'+cmd);
+  for(const [verb,name] of (cmd==='skills'?[['search','搜索'],['show','详情'],['on','启用'],['off','停用']]:cmd==='plugins'?[['search','搜索'],['show','详情'],['add','安装'],['del','卸载']]:[['show','详情'],['on','启用'],['off','停用']]))add(cmd+'-'+verb,group,name+label,`/${cmd} ${verb} {target}`,[target],{confirm:['add','del'].includes(verb)?`将${name}原 Codex 的${label}。`:undefined});
+}
+add('skills-reload','技能与插件','重新扫描技能','/skills reload');add('plugins-list','技能与插件','插件分类列表','/plugins list');
+entries.splice(entries.findIndex(e=>e.id==='mcp-show'),1);
+for(const cmd of ['apps','mcp'])add(cmd+'-auth','技能与插件','授权'+(cmd==='apps'?'连接应用':'MCP 服务'),`/${cmd} auth {target}`,[target]);
+add('apps-search','技能与插件','搜索连接应用','/apps search {target}',[target]);add('apps-all','技能与插件','所有连接应用','/apps all');add('mcp-reload','技能与插件','重新加载 MCP 服务','/mcp reload');
+add('plugins-alias','技能与插件','设置插件简称','/plugins alias {target} {text}',[target,field('text','简称')]);
+add('experimental','高级功能','实验功能状态','/experimental');add('experimental-list','高级功能','实验功能列表','/experimental list');
+for(const [id,label] of [['show','查看实验功能'],['on','启用实验功能'],['off','停用实验功能']] as const)add('experimental-'+id,'高级功能',label,`/experimental ${id} {target}`,[target],{confirm:id==='show'?undefined:'这会更改电脑 Codex 的全局实验设置。'});
+add('goal','高级功能','查看原线程目标','/goal');add('goal-set','高级功能','设置线程目标','/goal {text}',[text]);
+for(const [id,label] of [['pause','暂停目标'],['resume','恢复目标'],['clear','清除目标']] as const)add('goal-'+id,'高级功能',label,'/goal '+id);
+add('agent','高级功能','后台 Agent 管理','/agent');add('weibo','高级功能','微博功能帮助','/weibo');
+add('uploads','草稿与附件','原附件批次状态','/uploads status');add('uploads-start','草稿与附件','开始原附件收集批次','/uploads');add('uploads-cancel','草稿与附件','取消原附件收集批次','/uploads cancel');
+for(const [id,label] of [['assistant','自然语言记录'],['log','写入日志'],['todo','新增待办'],['remind','新增提醒'],['note','新增笔记']] as const)add(id,'记录与提醒',label,`/${id} {text}`,[text],{delivery:'wechat'});
+for(const [id,label] of [['search','搜索记录'],['show','查看记录'],['del','归档记录']] as const)add('assistant-'+id,'记录与提醒',label,`/assistant ${id} {target}`,[target]);
+add('todo-done','记录与提醒','完成待办','/todo done {target}',[target]);
+for(const [id,label] of [['ok','确认记录草案'],['cancel','取消记录草案']] as const)add('assistant-'+id,'记录与提醒',label,'/assistant '+id);
+add('assistant-edit','记录与提醒','修改记录草案','/assistant edit {text}',[text],{delivery:'wechat'});
+add('automation','自动任务','查看自动任务','/automation');add('automation-list','自动任务','任务列表','/automation list');
+for(const [id,label] of [['add','准备新增定时任务'],['edit','修改任务草案']] as const)add('automation-'+id,'自动任务',label,`/automation ${id} {text}`,[text],{delivery:'wechat'});
+for(const [id,label] of [['show','查看任务'],['pause','暂停任务'],['resume','恢复任务'],['del','删除任务']] as const)add('automation-'+id,'自动任务',label,`/automation ${id} {target}`,[target],{confirm:id==='del'?'会删除选定的原桥接自动任务。':undefined});
+add('automation-rename','自动任务','重命名任务','/automation rename {target} {text}',[target,field('text','新名称')]);
+for(const [id,label] of [['confirm','确认定时任务草案'],['cancel','取消定时任务草案']] as const)add('automation-'+id,'自动任务',label,'/automation '+id);
+add('approvals','审批与任务','查看待批准操作','/allow');add('stop','审批与任务','停止当前任务','/stop',[],{delivery:'wechat'});
+add('allow-once','审批与任务','允许指定操作一次','/allow 1 {target}',[field('target','审批编号',{required:false})],{confirm:'请先查看待批准列表，确认命令和目标。'});
+add('allow-session','审批与任务','允许并在当前会话记住','/allow 2 {target}',[field('target','审批编号',{required:false})],{confirm:'将记住此项审批，适用范围由原桥接与提供方决定。'});
+add('deny','审批与任务','拒绝待批准操作','/deny {target}',[field('target','审批编号',{required:false})]);
+export const MOBILE_COMMANDS:ReadonlyArray<MobileCommand>=Object.freeze(entries);
+export function buildMobileCommand(id:unknown,values:unknown):{definition:MobileCommand;text:string}{
+  const definition=entries.find(x=>x.id===id);if(!definition)throw new Error('未知的图形操作');
+  if(!values || typeof values!=='object' || Array.isArray(values))values={};
+  const result:Record<string,string>={};
+  for(const f of definition.fields){const value=(values as any)[f.key];if(value!==undefined&&typeof value!=='string')throw new Error(f.label+'格式无效');const v=String(value||'').trim();if(f.required&&!v)throw new Error('请填写'+f.label);if(v.length>100000||/[\x00]/.test(v))throw new Error(f.label+'内容无效');if(f.options&&!f.options.includes(v))throw new Error(f.label+'选项无效');if(f.pattern&&v&&!new RegExp(f.pattern,'u').test(v))throw new Error(f.label+'格式无效');result[f.key]=v;}
+  return {definition,text:definition.template.replace(/\{(\w+)\}/g,(_m,k)=>result[k]||'').trim()};
+}

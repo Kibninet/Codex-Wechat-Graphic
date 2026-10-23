@@ -18,6 +18,7 @@ import { CodexNativeApiService } from './providers/codex/native_api_service.js';
 import { OpenAINativeProviderPlugin } from './providers/openai_native/plugin.js';
 import { OpenAICompatibleProviderPlugin } from './providers/openai_compatible/plugin.js';
 import { WeixinBridgeRuntime } from './runtime/weixin_bridge_runtime.js';
+import { startWeixinMobileControl } from './runtime/weixin_mobile_control.js';
 import { scheduleManagedWindowsRestart } from './runtime/managed_restart.js';
 import { WeixinConversationRouter, withWeixinConversationDelivery } from './runtime/weixin_conversation_router.js';
 import { createI18n } from './i18n/index.js';
@@ -250,6 +251,7 @@ async function runWeixinServe(args: string[]) {
     locale: i18n.locale,
   } as any);
   platformPlugin.shouldSendDownloadReceipt = (recipientId) => !bridgeRuntime.isChatModeForRecipient(recipientId);
+  let mobileControl: Awaited<ReturnType<typeof startWeixinMobileControl>> | null = null;
   const embeddedNativeApiOptions = resolveEmbeddedCodexNativeApiOptions({
     env: process.env,
     defaultProviderProfileId: runtime.config.defaultProviderProfileId,
@@ -290,6 +292,7 @@ async function runWeixinServe(args: string[]) {
     stopped = true;
     process.stdout.write(`${i18n.t('cli.serve.stopping', { signal })}\n`);
     try {
+      await mobileControl?.stop().catch(() => {});
       await bridgeRuntime.stop();
       await nativeApi?.stop().catch(() => {});
     } finally {
@@ -303,6 +306,10 @@ async function runWeixinServe(args: string[]) {
   process.on('SIGTERM', () => { void stop('SIGTERM'); });
 
   try {
+    if (process.env.CODEXBRIDGE_MOBILE_CONTROL_ENABLED === '1' && platformPlugin.config.allowFrom[0]) {
+      mobileControl = await startWeixinMobileControl({ stateDir, ownerId: platformPlugin.config.allowFrom[0], conversationRouter, bridgeRuntime, runtime });
+      process.stdout.write('mobile_weixin_control_enabled: true\n');
+    }
     await flushPendingRestartNotifications({
       stateDir,
       platformPlugin,
@@ -316,6 +323,7 @@ async function runWeixinServe(args: string[]) {
     }
     await bridgeRuntime.start();
   } finally {
+    await mobileControl?.stop().catch(() => {});
     await nativeApi?.stop().catch(() => {});
     await stopRuntimeProviderPlugins(runtime.registry.listProviders());
     await serveLock.release();

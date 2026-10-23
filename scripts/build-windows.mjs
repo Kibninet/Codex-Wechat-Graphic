@@ -3,6 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import { includeAppSource } from './release-file-filter.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const version = '0.3.2';
@@ -42,7 +43,7 @@ const dependencySource = reuse ? path.join(reuse, 'app') : path.join(root, 'app'
 if (!reuse) npm(['ci', '--no-audit', '--no-fund'], dependencySource);
 fs.cpSync(path.join(root, 'app'), path.join(release, 'app'), {
   recursive: true,
-  filter: source => !path.relative(path.join(root, 'app'), source).split(path.sep).includes('node_modules'),
+  filter: source => includeAppSource(path.relative(path.join(root, 'app'), source)),
 });
 const dependencies = path.join(dependencySource, 'node_modules');
 if (!fs.existsSync(path.join(dependencies, 'tsx/package.json'))) throw new Error('Dependencies are incomplete.');

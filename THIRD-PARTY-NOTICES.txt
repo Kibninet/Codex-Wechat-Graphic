@@ -9,3 +9,5 @@ Codex-Wechat 使用的组件、源代码及许可信息如下。
 - FFmpeg / FFprobe：原有许可和构建说明保留在各自包目录。构建与源代码信息：https://github.com/eugeneware/ffmpeg-static 、https://github.com/joshwnj/ffprobe-static 、https://ffmpeg.org/ 。
 
 本发行包未对上游整体重新指定许可证。各组件继续适用自己的许可与署名要求。
+
+Android rendering libraries (pinned by app/apps/mobile-ui/package-lock.json): Marked 18.1.1, DOMPurify 3.4.17, KaTeX 0.19.0. Bundled license texts: third-party/mobile-rendering-LICENSES.txt. Generated offline bundles also carry these notices.

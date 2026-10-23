@@ -35,6 +35,10 @@ export class WeixinConversationRouter {
   activeScopeForRecipient(recipientId: string): string {
     return this.active(this.ensureGroup(recipientId)).scopeId;
   }
+  snapshotForRecipient(recipientId: string) {
+    const group = this.ensureGroup(recipientId);
+    return { activeScopeId: group.activeScopeId, conversations: group.conversations.map(c => ({ ...c })) };
+  }
 
   constructor(private readonly filePath: string) {
     if (!fs.existsSync(filePath)) {
@@ -150,10 +154,13 @@ export class WeixinConversationRouter {
         return this.reply(group, `已切换到「${conversation.name}」。其他聊天的任务会继续运行。`);
       }
       case 'rename': {
-        const issue = this.validateName(group, name);
+        const target = parts.length === 2 ? group.conversations.find(c => c.name === parts[0] && !c.archivedAt) : this.active(group);
+        const nextName = parts.length === 2 ? parts[1] : name;
+        if (!target) return this.reply(group, '找不到要重命名的聊天。');
+        const issue = this.validateName(group, nextName);
         if (issue) return this.reply(group, issue);
-        this.active(group).name = name;
-        return this.reply(group, `当前聊天已改名为「${name}」。`);
+        target.name = nextName;
+        return this.reply(group, `聊天已改名为「${nextName}」。`);
       }
       case 'archive': {
         const conversation = group.conversations.find((candidate) => candidate.name === name && !candidate.archivedAt);

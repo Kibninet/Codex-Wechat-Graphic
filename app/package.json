@@ -7,9 +7,9 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "start": "tsx src/index.ts",
-    "web:dev": "pnpm --dir apps/web dev",
-    "web:build": "pnpm --dir apps/web build",
-    "web:start": "pnpm --dir apps/web start",
+    "web:dev": "npm --prefix apps/web run dev",
+    "web:build": "npm --prefix apps/web run build",
+    "web:start": "npm --prefix apps/web run start",
     "mission-control:build": "tsc -p packages/mission-control/tsconfig.json",
     "mission-control:check-boundary": "node scripts/check-mission-control-boundary.mjs",
     "mission-control:test": "tsx --test packages/mission-control/test/*.test.ts",
@@ -38,7 +38,9 @@
     "codex:cleanup-internal-threads": "tsx src/cli.ts codex cleanup-internal-threads",
     "test": "node ./scripts/test.mjs",
     "test:live-agent": "node --input-type=module -e \"process.env.CODEXBRIDGE_TEST_ALLOW_LIVE_AGENT='1'; await import('./scripts/test.mjs');\" test/live_agent/live_agent_smoke.test.ts",
-    "test:live-openai-compatible": "node --input-type=module -e \"process.env.CODEXBRIDGE_TEST_LIVE_OPENAI_COMPATIBLE='1'; await import('./scripts/test.mjs');\" test/providers/openai_compatible/live_provider_smoke.test.ts"
+    "test:live-openai-compatible": "node --input-type=module -e \"process.env.CODEXBRIDGE_TEST_LIVE_OPENAI_COMPATIBLE='1'; await import('./scripts/test.mjs');\" test/providers/openai_compatible/live_provider_smoke.test.ts",
+    "mobile:prepare": "node scripts/prepare-mobile-assets.mjs",
+    "mobile:android": "node scripts/build-android.mjs"
   },
   "engines": {
     "node": ">=24"

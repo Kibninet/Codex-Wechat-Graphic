@@ -796,29 +796,44 @@ export class CodexAppClient extends EventEmitter {
       requestPayload.personality = personality;
       (requestPayload.settings as Record<string, unknown>).personality = personality;
     }
-    const result: any = await this.request('turn/start', requestPayload, { timeoutMs: 30_000 });
-    const turn = result?.turn;
-    if (!turn?.id) {
-      throw new Error('Codex turn/start returned no turn id');
-    }
-    this.logDebug('turn_start_acknowledged', {
-      threadId,
-      turnId: String(turn.id),
-      status: String(turn.status ?? ''),
-    });
-    if (typeof onTurnStarted === 'function') {
-      await onTurnStarted({
-        turnId: String(turn.id),
+    // A fast turn can finish before turn/start resolves or while its callback runs.
+    // Preserve those notifications until the regular turn listener is attached.
+    const earlyNotifications: any[] = [];
+    const captureNotification = (notification: any) => {
+      if (extractThreadIdFromNotification(notification) === threadId) {
+        earlyNotifications.push(notification);
+      }
+    };
+    this.on('notification', captureNotification);
+    try {
+      const result: any = await this.request('turn/start', requestPayload, { timeoutMs: 30_000 });
+      const turn = result?.turn;
+      if (!turn?.id) {
+        throw new Error('Codex turn/start returned no turn id');
+      }
+      this.logDebug('turn_start_acknowledged', {
         threadId,
+        turnId: String(turn.id),
+        status: String(turn.status ?? ''),
       });
+      if (typeof onTurnStarted === 'function') {
+        await onTurnStarted({
+          turnId: String(turn.id),
+          threadId,
+        });
+      }
+      return await this.waitForTurnResult({
+        threadId,
+        turnId: String(turn.id),
+        onProgress,
+        onApprovalRequest,
+        timeoutMs,
+        earlyNotifications,
+        onListenerReady: () => this.off('notification', captureNotification),
+      });
+    } finally {
+      this.off('notification', captureNotification);
     }
-    return this.waitForTurnResult({
-      threadId,
-      turnId: String(turn.id),
-      onProgress,
-      onApprovalRequest,
-      timeoutMs,
-    });
   }
 
   async interruptTurn({ threadId, turnId }: { threadId: string; turnId: string }): Promise<void> {
@@ -1707,12 +1722,16 @@ export class CodexAppClient extends EventEmitter {
     onProgress,
     onApprovalRequest,
     timeoutMs,
+    earlyNotifications = [],
+    onListenerReady = null,
   }: {
     threadId: string;
     turnId: string;
     onProgress?: ((progress: ProviderTurnProgress) => Promise<void> | void) | null;
     onApprovalRequest?: ((request: ProviderApprovalRequest) => Promise<void> | void) | null;
     timeoutMs: number;
+    earlyNotifications?: any[];
+    onListenerReady?: (() => void) | null;
   }): Promise<ProviderTurnResult> {
     const deadline = this.turnPollNow() + timeoutMs;
     let firstTerminalWithoutOutputAt = null;
@@ -1733,10 +1752,24 @@ export class CodexAppClient extends EventEmitter {
     };
     const itemOutputKinds = new Map();
     let sawTerminalNotification = false;
+    let terminalNotificationAt: number | null = null;
+    let terminalNotificationTurn: any = null;
     let terminalRuntimeError: string | null = null;
     const onNotification = (notification) => {
+      const notificationThreadId = extractThreadIdFromNotification(notification);
+      if (notificationThreadId && notificationThreadId !== threadId) {
+        return;
+      }
       if (isTerminalNotificationForThread(notification, threadId, turnId)) {
         sawTerminalNotification = true;
+        terminalNotificationAt = this.turnPollNow();
+        terminalNotificationTurn = notification?.params?.turn ?? {
+          status: notification?.params?.status ?? 'completed',
+        };
+        if (normalizeTurnStatusKey(terminalNotificationTurn.status) === 'failed') {
+          terminalRuntimeError = extractTextCandidate(terminalNotificationTurn.error)
+            ?? 'Codex turn failed without an error message';
+        }
       }
       if (isErrorNotificationForThreadTurn(notification, threadId, turnId)) {
         const notificationErrorMessage = extractNotificationErrorMessage(notification);
@@ -1794,6 +1827,7 @@ export class CodexAppClient extends EventEmitter {
     };
     this.on('notification', onNotification);
     this.on('approval_request', onApprovalEvent);
+    onListenerReady?.();
     this.logDebug('turn_wait_start', {
       threadId,
       turnId,
@@ -1802,6 +1836,13 @@ export class CodexAppClient extends EventEmitter {
       terminalSettleMs,
     });
     try {
+      for (const notification of earlyNotifications) {
+        onNotification(notification);
+      }
+      earlyNotifications.length = 0;
+      for (const request of this.getPendingApprovals({ threadId, turnId })) {
+        onApprovalEvent(request);
+      }
       while (true) {
         const pendingApprovalCount = this.getPendingApprovals({ threadId, turnId }).length;
         const pastDeadline = this.turnPollNow() >= deadline;
@@ -1919,16 +1960,25 @@ export class CodexAppClient extends EventEmitter {
           return result;
         }
         if (includeTurnsUnsupported) {
+          if (sawTerminalNotification && classifyTurnCompletionState(terminalNotificationTurn) === 'interrupted') {
+            return {
+              turnId, threadId, title: thread?.title ?? null,
+              outputText: '', outputArtifacts: [], outputMedia: [],
+              outputState: 'interrupted', previewText: progressState.finalAnswerText,
+              finalSource: progressState.finalAnswerText ? 'progress_only' : 'none',
+              status: terminalNotificationTurn?.status ?? 'interrupted',
+            };
+          }
           const previewText = progressState.finalAnswerText || progressState.commentaryText;
           const settleAnchor = Math.max(
             includeTurnsUnsupportedAt,
             progressState.lastAssistantActivityAt || 0,
+            terminalNotificationAt ?? 0,
           );
-          const settleElapsedMs = settleAnchor ? this.turnPollNow() - settleAnchor : 0;
+          const settleElapsedMs = this.turnPollNow() - settleAnchor;
           if (
             (
               !sawTerminalNotification
-              || !previewText
               || settleElapsedMs < 500
             )
             && this.turnPollNow() + 250 < deadline
@@ -3550,7 +3600,8 @@ function isTerminalNotificationForThread(
   }
   const method = String(notification?.method ?? '').replace(/[^a-z]/gi, '').toLowerCase();
   if (method === 'turncompleted') {
-    return true;
+    const notificationTurnId = extractNotificationTurnId(notification?.params ?? null);
+    return !notificationTurnId || notificationTurnId === turnId;
   }
   return false;
 }
@@ -4284,6 +4335,9 @@ function extractNotificationTurnId(params) {
   const direct = typeof params?.turnId === 'string' ? params.turnId : null;
   if (direct) {
     return direct;
+  }
+  if (typeof params?.turn?.id === 'string') {
+    return params.turn.id;
   }
   const nested = typeof params?.item?.turnId === 'string' ? params.item.turnId : null;
   if (nested) {

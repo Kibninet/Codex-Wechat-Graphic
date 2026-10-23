@@ -1,5 +1,19 @@
 # Codex-Wechat Graphic
 
+## Android 微信图形管理端 0.2.0
+
+[下载 Android APK](https://github.com/Kibninet/Codex-Wechat-Graphic/raw/refs/heads/main/downloads/Codex-Wechat-Android-0.2.0.apk) · [图形操作覆盖表](./手机图形操作.md) · [手机管理服务部署](./app/apps/web/README.md)
+
+Android 管理的是原来的微信聊天。支持聊天与项目目录管理、草稿与附件、模型、任务及审批，并提供 11 类、118 项结构化操作，将原有公开指令做成按钮、选项和参数表单。线程、技能和插件列表支持点击操作；普通回答仍回到原微信。
+
+回答区离线渲染 Markdown 与 LaTeX，表格和公式可滚动，代码块保持原文并可复制。新增按键按下、忙碌、成功/失败反馈与重复提交保护；原生触感遵循系统设置。最低 Android 8，建议使用更新的系统 WebView。
+
+此 APK 需要部署本仓库新增的电脑手机管理服务；既有 Windows 完整 ZIP 仍是原桌面发行版，并未自动包含这些新增依赖。安装、同一网络配对、可选 5G HTTPS 中转及源码构建见上面的部署说明。临时隧道不是固定域名服务。
+
+本轮 121 项相关测试通过，微信生产源码类型检查、Web 生产构建及 APK v2/v3 签名校验通过；不代表已经逐项完成真实 Android 手机验收。
+
+## Windows 桌面桥接
+
 Windows x64 本地客户端。通过微信与电脑上的 Codex 对话，电脑负责计算，微信负责收发。内置 Node.js、Codex CLI 和所需依赖，使用时无需另外安装 npm 包。
 
 [下载 Windows x64 完整发行版](https://github.com/Kibninet/Codex-Wechat-Graphic/releases/latest) · [完整指令](./完整指令.md)
@@ -80,7 +94,7 @@ Windows x64 本地客户端。通过微信与电脑上的 Codex 对话，电脑�
 
 - 模型由 Codex 和账号的实际可用配置决定，发行包不预置个人模型偏好。
 - 默认使用 `default-permissions`。需要其他权限时，可在相应聊天里使用 `/permissions` 查看及选择。
-- 微信私聊只接受完成扫码的账号，群聊默认关闭；不开放额外本地 HTTP API。
+- 微信私聊只接受完成扫码的账号，群聊默认关闭。手机管理为可选功能；启用后提供令牌认证的回环控制口和需要登录配对的 Web 服务。
 - 配置、凭据、二维码、聊天绑定、历史和日志均写入 `%LOCALAPPDATA%\Codex-Wechat`，不会回写到发行文件夹。
 - 每个用户首次运行都使用自己的登录。发行包不包含任何现成账号、聊天或项目内容。
 - 此目录中的数据不应随发行包一起分享。发行包本身可以移动；移动前停止后台，移动后从新位置启动。
@@ -107,6 +121,8 @@ Windows x64，安装 Node.js 24 或更新版本（当前发行包使用 24.20.0�
 ```powershell
 cd app
 npm ci
+npm --prefix apps/mobile-ui ci --ignore-scripts
+node scripts/prepare-mobile-assets.mjs
 npm test -- test/runtime/weixin_conversation_router.test.ts test/runtime/managed_restart.test.ts test/runtime/weixin_bridge_runtime.test.ts test/platforms/weixin/poller.test.ts
 npx tsc -p tsconfig.weixin-local.json --noEmit
 cd ..
